@@ -29,7 +29,7 @@ class PaneSnapshot:
 
     session: str
     pane_id: str
-    line_count: int  # total scrollback lines at snapshot time
+    line_count: int  # total captured pane lines at snapshot time
 
 
 # ── sessions ──────────────────────────────────────────────────────────────────
@@ -79,7 +79,7 @@ def kill_session(name: str) -> None:
 
 
 def _get_session(server: libtmux.Server, name: str) -> libtmux.Session:
-    session = server.find_where({"session_name": name})
+    session = server.sessions.get(session_name=name, default=None)
     if session is None:
         raise ValueError(f"Session '{name}' not found")
     return session
@@ -89,19 +89,19 @@ def _get_pane(
     server: libtmux.Server, session_name: str, pane_index: int = 0
 ) -> libtmux.Pane:
     session = _get_session(server, session_name)
-    window = session.attached_window or session.windows[0]
+    window = session.active_window or session.windows[0]
     panes = window.panes
-    if pane_index >= len(panes):
+    if pane_index < 0 or pane_index >= len(panes):
         raise ValueError(
             f"Pane index {pane_index} out of range (session has {len(panes)} panes)"
         )
     return panes[pane_index]
 
 
-def _pane_scrollback_lines(pane: libtmux.Pane) -> int:
-    """Return total number of lines in the pane scrollback."""
-    result = pane.cmd("display-message", "-p", "#{history_size}")
-    return int(result.stdout[0].strip())
+def _capture_pane_lines(pane: libtmux.Pane, start: str = "-") -> list[str]:
+    """Return captured pane lines, including scrollback and visible output."""
+    result = pane.cmd("capture-pane", "-p", "-S", start)
+    return list(result.stdout)
 
 
 # ── reading ───────────────────────────────────────────────────────────────────
@@ -112,8 +112,7 @@ def read_pane(session: str, pane_index: int = 0, lines: int = 200) -> str:
     server = get_server()
     pane = _get_pane(server, session, pane_index)
     # -S -<lines> means "start N lines before the bottom"
-    result = pane.cmd("capture-pane", "-p", "-S", f"-{lines}")
-    return "\n".join(result.stdout)
+    return "\n".join(_capture_pane_lines(pane, f"-{lines}"))
 
 
 def snapshot_pane(session: str, pane_index: int = 0) -> PaneSnapshot:
@@ -123,7 +122,7 @@ def snapshot_pane(session: str, pane_index: int = 0) -> PaneSnapshot:
     """
     server = get_server()
     pane = _get_pane(server, session, pane_index)
-    line_count = _pane_scrollback_lines(pane)
+    line_count = len(_capture_pane_lines(pane))
     return PaneSnapshot(
         session=session,
         pane_id=pane.pane_id,
@@ -140,12 +139,11 @@ def read_pane_since(
     """
     server = get_server()
     pane = _get_pane(server, snapshot.session, pane_index)
-    current = _pane_scrollback_lines(pane)
-    new_lines = min(current - snapshot.line_count, max_lines)
-    if new_lines <= 0:
+    lines = _capture_pane_lines(pane)
+    new_lines = lines[snapshot.line_count :]
+    if not new_lines or max_lines <= 0:
         return ""
-    result = pane.cmd("capture-pane", "-p", "-S", f"-{new_lines}")
-    return "\n".join(result.stdout)
+    return "\n".join(new_lines[-max_lines:])
 
 
 def grep_pane(
@@ -158,7 +156,7 @@ def grep_pane(
     content = read_pane(session, pane_index, lines)
     try:
         result = subprocess.run(
-            ["grep", "-n", "--context=2", pattern],
+            ["grep", "-n", "--context=2", "--", pattern],
             input=content,
             capture_output=True,
             text=True,
