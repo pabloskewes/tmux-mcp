@@ -9,6 +9,9 @@ from dataclasses import dataclass
 
 import libtmux
 
+# Keep snapshot/read_pane_since aligned with read_pane's capture window.
+_MAX_CAPTURE_LINES = 5000
+
 
 def get_server() -> libtmux.Server:
     return libtmux.Server()
@@ -122,7 +125,7 @@ def snapshot_pane(session: str, pane_index: int = 0) -> PaneSnapshot:
     """
     server = get_server()
     pane = _get_pane(server, session, pane_index)
-    line_count = len(_capture_pane_lines(pane))
+    line_count = len(_capture_pane_lines(pane, f"-{_MAX_CAPTURE_LINES}"))
     return PaneSnapshot(
         session=session,
         pane_id=pane.pane_id,
@@ -139,7 +142,7 @@ def read_pane_since(
     """
     server = get_server()
     pane = _get_pane(server, snapshot.session, pane_index)
-    lines = _capture_pane_lines(pane)
+    lines = _capture_pane_lines(pane, f"-{_MAX_CAPTURE_LINES}")
     new_lines = lines[snapshot.line_count :]
     if not new_lines or max_lines <= 0:
         return ""
